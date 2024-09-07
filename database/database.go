@@ -2,76 +2,82 @@ package database
 
 import (
 	"database/sql"
+	"finalProject/models"
 	"fmt"
-	"log"
-	"os"
-	"path/filepath"
 
 	_ "modernc.org/sqlite"
 )
 
-var db *sql.DB
+const DbPath = "scheduler.db"
 
-func StartDB() *sql.DB {
-	db, err := sql.Open("sqlite", "scheduler.db")
+type TaskStore struct {
+	DB *sql.DB
+}
+
+func (at TaskStore) OpenDB(dbpath string) TaskStore {
+	db, err := sql.Open("sqlite", dbpath)
 	if err != nil {
 		fmt.Println(err)
-		return nil
+		return TaskStore{}
 	}
-	return db
+	return TaskStore{DB: db}
 }
 
-func CreateDB() {
-	StartDB()
-	appPath, err := os.Executable()
+func (at TaskStore) UpdateTask(t models.Task) error {
+	query := `UPDATE scheduler SET date=?, title=?, comment=?, repeat=? WHERE id=?`
+	result, err := at.DB.Exec(query, t.Date, t.Title, t.Comment, t.Repeat, t.ID)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("Задача не найдена")
+		return err
 	}
-	dbFile := filepath.Join(filepath.Dir(appPath), "scheduler.db")
-	_, err = os.Stat(dbFile)
 
-	var install bool
+	// Считаем измененные строки
+	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Println("DB creating")
-			install = true
-		} else {
-			log.Println("DB create error")
-			log.Fatal(err)
-		}
+		fmt.Println("Ощибка подсчета")
+		return err
 	}
-	log.Println("DB created before")
 
-	if install {
-		createTable()
-	} else {
-		fmt.Println("Error create table")
+	if rowsAffected == 0 {
+		fmt.Println("Задача без изменений")
+		return err
 	}
+
+	return nil
 }
 
-func createTable() {
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS scheduler (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		date TEXT,
-		title TEXT,
-		comment TEXT,
-		repeat TEXT
-	);`
-
-	_, err := db.Exec(createTableSQL)
+func (at TaskStore) DeleteTask(id string) (sql.Result, error) {
+	deleteQuery := `DELETE FROM scheduler WHERE id = ?`
+	res, err := at.DB.Exec(deleteQuery, id)
 	if err != nil {
-		fmt.Printf("error create table: %v", err)
+		fmt.Println("Ошибка выполнения запроса")
+		return nil, err
 	}
 
-	createIndexSQL := `
-	CREATE INDEX IF NOT EXISTS idx_date ON scheduler(date);
-	`
-
-	_, err = db.Exec(createIndexSQL)
+	rowsAffected, err := res.RowsAffected()
 	if err != nil {
-		fmt.Printf("error create index: %v", err)
+		fmt.Println("Ошибка получения результата запроса")
+		return nil, err
 	}
 
-	fmt.Println("Table and index created successfully")
+	if rowsAffected == 0 {
+		fmt.Println("Ошибка не найдена")
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func (at TaskStore) AddTask(t models.Task) (int64, error) {
+	res, err := at.DB.Exec("insert into scheduler (date, title, comment, repeat) values (?, ?, ?, ?)",
+		t.Date, t.Title, t.Comment, t.Repeat)
+	if err != nil {
+		return 0, err
+	}
+
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
 }

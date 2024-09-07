@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"finalProject/database"
@@ -10,15 +9,76 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
 const DateFormat = `20060102`
+const MaxTasks = 10
 
-type TaskStore struct {
-	db *sql.DB
+var ts database.TaskStore
+
+func CreateDB() database.TaskStore {
+	ts = ts.OpenDB(database.DbPath)
+	appPath, err := os.Executable()
+	if err != nil {
+		log.Fatal(err)
+	}
+	dbFile := filepath.Join(filepath.Dir(appPath), database.DbPath)
+	_, err = os.Stat(dbFile)
+
+	var install bool
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Println("DB creating")
+			install = true
+		} else {
+			log.Println("DB create error")
+			log.Fatal(err)
+		}
+	}
+
+	log.Println("DB created before")
+
+	install = true
+
+	if install {
+		CreateTable(ts)
+		return ts
+	} else {
+		fmt.Println("Error create table")
+		return ts
+	}
+}
+
+func CreateTable(ts database.TaskStore) {
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS scheduler (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		date TEXT,
+		title TEXT,
+		comment TEXT,
+		repeat TEXT
+	);`
+
+	_, err := ts.DB.Exec(createTableSQL)
+	if err != nil {
+		fmt.Printf("error create table: %v", err)
+	}
+
+	createIndexSQL := `
+	CREATE INDEX IF NOT EXISTS idx_date ON scheduler(date);
+	`
+
+	_, err = ts.DB.Exec(createIndexSQL)
+	if err != nil {
+		fmt.Printf("error create index: %v", err)
+	}
+
+	fmt.Println("Table and index created successfully")
 }
 
 func GetNextDate(w http.ResponseWriter, r *http.Request) {
@@ -40,7 +100,8 @@ func GetNextDate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, err = w.Write([]byte(newDate))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("GetNextDate error: %v\n", err), http.StatusBadRequest)
+		log.Println("unable to write:", err)
+		return
 	}
 }
 
@@ -51,14 +112,12 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 	_, err := buf.ReadFrom(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		log.Println("not read body")
 		return
 	}
 	log.Println("read body ok")
 
 	if err = json.Unmarshal(buf.Bytes(), &task); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		log.Println("not unmarshal JSON")
 		return
 	}
 	log.Println("JSON unmarshal ok ")
@@ -97,8 +156,7 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	store := openTaskStore()
-	id, err := store.Add(task)
+	id, err := ts.AddTask(task)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -107,41 +165,22 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 	// Формирование ответа
 	w.Header().Set("Content-Type", "application/json, charset=UTF-8")
 	w.WriteHeader(http.StatusCreated)
-	w.Write([]byte(fmt.Sprintf(`{"id": %d}`, id)))
-}
-
-func openTaskStore() TaskStore {
-	db, err := sql.Open("sqlite", "scheduler.db")
+	_, err = w.Write([]byte(fmt.Sprintf(`{"id": %d}`, id)))
 	if err != nil {
-		log.Fatal(err) // Программа завершится, если возникнет ошибка
-	}
-	return TaskStore{db: db}
-}
-
-func (at TaskStore) Add(t models.Task) (int64, error) {
-	res, err := at.db.Exec("insert into scheduler (date, title, comment, repeat) values (?, ?, ?, ?)",
-		t.Date, t.Title, t.Comment, t.Repeat)
-	if err != nil {
-		return 0, err
+		log.Println("unable to write:", err)
+		return
 	}
 
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
 }
 
 func GetTasksHandler(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().Format(DateFormat)
-	maxTasks := 10
 
 	var t models.Task
 	var tasks []models.Task
 	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE date >= ? ORDER BY date ASC LIMIT ?`
 
-	datab := database.StartDB()
-	rows, err := datab.Query(query, now, maxTasks)
+	rows, err := ts.DB.Query(query, now, MaxTasks)
 	if err != nil {
 		err := errors.New("Ошибка запроса к базе данных")
 		models.ErrorResponse.Error = err.Error()
@@ -189,9 +228,7 @@ func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?`
-
-	datab := database.StartDB()
-	row := datab.QueryRow(query, id)
+	row := ts.DB.QueryRow(query, id)
 	err := row.Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
 
 	if err != nil {
@@ -261,8 +298,6 @@ func PutTaskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	database.StartDB()
-
 	// Формирование ответа
 	w.Header().Set("Content-Type", "application/json, charset=UTF-8")
 	w.WriteHeader(http.StatusOK)
@@ -283,8 +318,7 @@ func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?`
 
 	today := time.Now()
-	datab := database.StartDB()
-	row := datab.QueryRow(query, id)
+	row := ts.DB.QueryRow(query, id)
 	err := row.Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
 
 	if err != nil {
@@ -295,7 +329,7 @@ func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if t.Repeat == "" {
-		err := database.DeleteTask(datab, t.ID)
+		_, err := ts.DeleteTask(t.ID)
 		if err != nil {
 			return
 		}
@@ -307,8 +341,6 @@ func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		t.Date = nextDate
-		err = database.UpdateTask(datab, t)
-
 	}
 
 	// Возвращаем ответ
@@ -319,13 +351,12 @@ func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
-	db := database.StartDB()
 	id := r.URL.Query().Get("id")
 	if id == "" {
 		log.Printf("error id")
 	}
 
-	err := database.DeleteTask(db, id)
+	_, err := ts.DeleteTask(id)
 	if err != nil {
 		if err.Error() == "задача не найдена" {
 			http.Error(w, `{"error": "Задача не найдена"}`, http.StatusNotFound)

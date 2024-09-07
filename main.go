@@ -1,7 +1,6 @@
 package main
 
 import (
-	"finalProject/database"
 	"finalProject/handlers"
 	"fmt"
 	"log"
@@ -14,12 +13,14 @@ const webDir = "./web"
 const port = 7540
 
 func main() {
-	database.CreateDB()
+	db := handlers.CreateDB()
+	log.Println(db, "done")
 	r := chi.NewRouter()
 	fs := http.FileServer(http.Dir(webDir))
 
 	r.Handle("/*", fs)
 	log.Printf("Loaded frontend from %s\n", webDir)
+	log.Printf("Start server in port %d\n", port)
 
 	r.Get("/api/nextdate", handlers.GetNextDate)
 	r.Post("/api/task", handlers.PostTaskHandler)
