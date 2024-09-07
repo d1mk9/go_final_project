@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -21,64 +21,61 @@ const MaxTasks = 10
 
 var ts database.TaskStore
 
-func CreateDB() database.TaskStore {
-	ts = ts.OpenDB(database.DbPath)
-	appPath, err := os.Executable()
-	if err != nil {
-		log.Fatal(err)
+func NextDate(now time.Time, dateStr string, repeat string) (string, error) {
+	if repeat == "" {
+		return "", errors.New("Правило повторения не указано")
 	}
-	dbFile := filepath.Join(filepath.Dir(appPath), database.DbPath)
-	_, err = os.Stat(dbFile)
 
-	var install bool
+	date, err := time.Parse(DateFormat, dateStr)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Println("DB creating")
-			install = true
+		return "", fmt.Errorf("Неверный формат даты: %v", err)
+	}
+
+	parts := strings.Fields(repeat)
+	rule := parts[0]
+
+	var resultDate time.Time
+	switch rule {
+	case "":
+		if date.Before(now) {
+			resultDate = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 		} else {
-			log.Println("DB create error")
-			log.Fatal(err)
+			resultDate = date
 		}
+	case "d":
+		if len(parts) != 2 {
+			return "", errors.New("Неверный формат повторения для 'd'")
+		}
+
+		daysToInt := make([]int, 0, 7)
+		days, err := strconv.Atoi(parts[1])
+		if err != nil || days <= 0 || days > 400 {
+			return "", errors.New("Неверное кол-во дней")
+		}
+		daysToInt = append(daysToInt, days)
+
+		if daysToInt[0] == 1 {
+			resultDate = date.AddDate(0, 0, 1)
+		} else {
+			resultDate = date.AddDate(0, 0, daysToInt[0])
+			for resultDate.Before(now) {
+				resultDate = resultDate.AddDate(0, 0, daysToInt[0])
+			}
+		}
+	case "y":
+		if len(parts) != 1 {
+			return "", errors.New("Неверный формат повторения для 'y'")
+		}
+
+		resultDate = date.AddDate(1, 0, 0)
+		for resultDate.Before(now) {
+			resultDate = resultDate.AddDate(1, 0, 0)
+		}
+	default:
+		return "", errors.New("Не поддерживаемый формат повторения")
 	}
 
-	log.Println("DB created before")
-
-	install = true
-
-	if install {
-		CreateTable(ts)
-		return ts
-	} else {
-		fmt.Println("Error create table")
-		return ts
-	}
-}
-
-func CreateTable(ts database.TaskStore) {
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS scheduler (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		date TEXT,
-		title TEXT,
-		comment TEXT,
-		repeat TEXT
-	);`
-
-	_, err := ts.DB.Exec(createTableSQL)
-	if err != nil {
-		fmt.Printf("error create table: %v", err)
-	}
-
-	createIndexSQL := `
-	CREATE INDEX IF NOT EXISTS idx_date ON scheduler(date);
-	`
-
-	_, err = ts.DB.Exec(createIndexSQL)
-	if err != nil {
-		fmt.Printf("error create index: %v", err)
-	}
-
-	fmt.Println("Table and index created successfully")
+	return resultDate.Format(DateFormat), nil
 }
 
 func GetNextDate(w http.ResponseWriter, r *http.Request) {

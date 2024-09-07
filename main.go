@@ -14,7 +14,7 @@ const port = 7540
 
 func main() {
 	db := handlers.CreateDB()
-	log.Println(db, "done")
+	log.Printf("Database %s start", db)
 	r := chi.NewRouter()
 	fs := http.FileServer(http.Dir(webDir))
 
