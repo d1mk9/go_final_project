@@ -1,20 +1,21 @@
-package handlers
+package database
 
 import (
-	"finalProject/database"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 )
 
-func CreateDB() database.TaskStore {
-	ts = ts.OpenDB(database.DbPath)
+func CreateDB() (TaskStore, error) {
+	var ts TaskStore
+	ts = ts.NewTaskStore(ts.DB)
+	ts = ts.OpenDB(DbPath)
 	appPath, err := os.Executable()
 	if err != nil {
 		log.Fatal(err)
 	}
-	dbFile := filepath.Join(filepath.Dir(appPath), database.DbPath)
+	dbFile := filepath.Join(filepath.Dir(appPath), DbPath)
 	_, err = os.Stat(dbFile)
 
 	var install bool
@@ -34,14 +35,14 @@ func CreateDB() database.TaskStore {
 
 	if install {
 		CreateTable(ts)
-		return ts
+		return ts, nil
 	} else {
 		fmt.Println("Error create table")
-		return ts
+		return ts, err
 	}
 }
 
-func CreateTable(ts database.TaskStore) {
+func CreateTable(ts TaskStore) {
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS scheduler (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

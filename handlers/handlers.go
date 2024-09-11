@@ -17,9 +17,16 @@ import (
 )
 
 const DateFormat = `20060102`
-const MaxTasks = 10
 
-var ts database.TaskStore
+var t models.Task
+
+type API struct {
+	db database.TaskStore
+}
+
+func (api API) NewAPI(db database.TaskStore) API {
+	return API{db}
+}
 
 func NextDate(now time.Time, dateStr string, repeat string) (string, error) {
 	if repeat == "" {
@@ -78,7 +85,7 @@ func NextDate(now time.Time, dateStr string, repeat string) (string, error) {
 	return resultDate.Format(DateFormat), nil
 }
 
-func GetNextDate(w http.ResponseWriter, r *http.Request) {
+func (api API) GetNextDate(w http.ResponseWriter, r *http.Request) {
 	gNow, err := time.Parse(DateFormat, r.FormValue("now"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -102,8 +109,7 @@ func GetNextDate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var task models.Task
+func (api API) PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 
 	_, err := buf.ReadFrom(r.Body)
@@ -113,21 +119,21 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Println("read body ok")
 
-	if err = json.Unmarshal(buf.Bytes(), &task); err != nil {
+	if err = json.Unmarshal(buf.Bytes(), &t); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	log.Println("JSON unmarshal ok ")
 
-	if task.Title == "" {
+	if t.Title == "" {
 		http.Error(w, `{"error": "title cannot be empty"}`, http.StatusBadRequest)
 		return
 	}
 
-	if task.Date == "" {
-		task.Date = time.Now().Format(DateFormat)
+	if t.Date == "" {
+		t.Date = time.Now().Format(DateFormat)
 	} else {
-		parsedDate, err := time.Parse(DateFormat, task.Date)
+		parsedDate, err := time.Parse(DateFormat, t.Date)
 		if err != nil {
 			http.Error(w, `{"error": "invalid date format, expected YYYYMMDD"}`, http.StatusBadRequest)
 			return
@@ -135,25 +141,25 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 		today := time.Now()
 
 		if parsedDate.Before(today) {
-			if task.Repeat == "" {
-				task.Date = today.Format(DateFormat)
+			if t.Repeat == "" {
+				t.Date = today.Format(DateFormat)
 			} else {
-				nextDate, err := NextDate(today, task.Date, task.Repeat)
+				nextDate, err := NextDate(today, t.Date, t.Repeat)
 				if err != nil {
 					http.Error(w, fmt.Sprintf(`{"error": "failed to calculate next date: %s"}`, err.Error()), http.StatusBadRequest)
 					return
 				}
 				if nextDate > today.Format(DateFormat) {
-					task.Date = today.Format(DateFormat)
+					t.Date = today.Format(DateFormat)
 				} else {
-					task.Date = nextDate
+					t.Date = nextDate
 
 				}
 			}
 		}
 	}
 
-	id, err := ts.AddTask(task)
+	id, err := api.db.AddTask(t)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -170,53 +176,22 @@ func PostTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func GetTasksHandler(w http.ResponseWriter, r *http.Request) {
-	now := time.Now().Format(DateFormat)
-
-	var t models.Task
-	var tasks []models.Task
-	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE date >= ? ORDER BY date ASC LIMIT ?`
-
-	rows, err := ts.DB.Query(query, now, MaxTasks)
+func (api API) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
+	response, err := api.db.GetTasks(t, w)
 	if err != nil {
-		err := errors.New("Ошибка запроса к базе данных")
 		models.ErrorResponse.Error = err.Error()
 		json.NewEncoder(w).Encode(models.ErrorResponse)
 		return
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		err := rows.Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
-		if err != nil {
-			err := errors.New("Ошибка распознавания данных")
-			models.ErrorResponse.Error = err.Error()
-			json.NewEncoder(w).Encode(models.ErrorResponse)
-			return
-		}
-		tasks = append(tasks, t)
-	}
-
-	if len(tasks) == 0 {
-		tasks = []models.Task{}
-	}
-
-	response := models.TasksResponse{
-		Tasks: tasks,
-	}
-
-	// Возвращаем ответ
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
 
 }
 
-func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var t models.Task
-
+func (api API) GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
-
 	if id == "" {
 		err := errors.New("Пустой id")
 		models.ErrorResponse.Error = err.Error()
@@ -224,10 +199,7 @@ func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?`
-	row := ts.DB.QueryRow(query, id)
-	err := row.Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
-
+	_, err := api.db.GetTask(t, id)
 	if err != nil {
 		err := errors.New("Такого id нет")
 		models.ErrorResponse.Error = err.Error()
@@ -242,8 +214,7 @@ func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func PutTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var t models.Task
+func (api API) PutTaskHandler(w http.ResponseWriter, r *http.Request) {
 	var buf bytes.Buffer
 
 	_, err := buf.ReadFrom(r.Body)
@@ -301,23 +272,9 @@ func PutTaskHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(nil)
 }
 
-func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
-	var t models.Task
-
+func (api API) DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
-
-	if id == "" {
-		err := errors.New("Пустой id")
-		models.ErrorResponse.Error = err.Error()
-		json.NewEncoder(w).Encode(models.ErrorResponse)
-		return
-	}
-	query := `SELECT id, date, title, comment, repeat FROM scheduler WHERE id = ?`
-
-	today := time.Now()
-	row := ts.DB.QueryRow(query, id)
-	err := row.Scan(&t.ID, &t.Date, &t.Title, &t.Comment, &t.Repeat)
-
+	_, err := api.db.DoneTask("select", t, id)
 	if err != nil {
 		err := errors.New("Такого id нет")
 		models.ErrorResponse.Error = err.Error()
@@ -325,35 +282,54 @@ func DoneTaskHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if t.Repeat == "" {
-		_, err := ts.DeleteTask(t.ID)
+	if id == "" {
+		err := errors.New("Пустой id")
+		models.ErrorResponse.Error = err.Error()
+		json.NewEncoder(w).Encode(models.ErrorResponse)
+		return
+	}
+
+	if t.Repeat != "" {
+		nextDate, err := NextDate(time.Now(), t.Date, t.Repeat)
 		if err != nil {
-			return
-		}
-	} else {
-		nextDate, err := NextDate(today, t.Date, t.Repeat)
-		if err != nil {
-			log.Println("Ошибка nextdata")
+			err := errors.New("Ошибка nextdate")
+			models.ErrorResponse.Error = err.Error()
+			json.NewEncoder(w).Encode(models.ErrorResponse)
 			return
 		}
 
 		t.Date = nextDate
+
+		_, err = api.db.DoneTask("update", t, id)
+		if err != nil {
+			err := errors.New("Не удалось обновить дату задачи")
+			models.ErrorResponse.Error = err.Error()
+			json.NewEncoder(w).Encode(models.ErrorResponse)
+			return
+		}
+	} else {
+		_, err := api.db.DeleteTask(t.ID)
+		if err != nil {
+			err := errors.New("Ошибка удаления")
+			models.ErrorResponse.Error = err.Error()
+			json.NewEncoder(w).Encode(models.ErrorResponse)
+			return
+		}
 	}
-
 	// Возвращаем ответ
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json, charset=UTF-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{}`))
-
+	json.NewEncoder(w).Encode(nil)
 }
 
-func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
+func (api API) DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Query().Get("id")
+
 	if id == "" {
 		log.Printf("error id")
 	}
 
-	_, err := ts.DeleteTask(id)
+	_, err := api.db.DeleteTask(id)
 	if err != nil {
 		if err.Error() == "задача не найдена" {
 			http.Error(w, `{"error": "Задача не найдена"}`, http.StatusNotFound)
@@ -364,7 +340,7 @@ func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Возвращаем ответ
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json, charset=UTF-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`{}`))
+	json.NewEncoder(w).Encode(nil)
 }
