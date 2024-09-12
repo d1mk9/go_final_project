@@ -1,17 +1,15 @@
 package main
 
 import (
-	"finalProject/database"
-	"finalProject/handlers"
+	"finalProject/configs"
+	"finalProject/internal/database"
+	"finalProject/internal/handlers"
 	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 )
-
-const webDir = "./web"
-const port = 7540
 
 func main() {
 	var api handlers.API
@@ -25,11 +23,11 @@ func main() {
 
 	log.Printf("Database start")
 	r := chi.NewRouter()
-	fs := http.FileServer(http.Dir(webDir))
+	fs := http.FileServer(http.Dir(configs.WebDir))
 
 	r.Handle("/*", fs)
-	log.Printf("Loaded frontend from %s\n", webDir)
-	log.Printf("Start server in port %d\n", port)
+	log.Printf("Loaded frontend from %s\n", configs.WebDir)
+	log.Printf("Start server in port %d\n", configs.Port)
 
 	r.Get("/api/nextdate", api.GetNextDate)
 	r.Post("/api/task", api.PostTaskHandler)
@@ -39,7 +37,7 @@ func main() {
 	r.Post("/api/task/done", api.DoneTaskHandler)
 	r.Delete("/api/task", api.DeleteTaskHandler)
 
-	if err := http.ListenAndServe(fmt.Sprintf(":%d", port), r); err != nil {
+	if err := http.ListenAndServe(fmt.Sprintf(":%d", configs.Port), r); err != nil {
 		log.Fatalf("Server crash: %v\n", err)
 		return
 	}
